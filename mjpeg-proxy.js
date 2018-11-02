@@ -72,9 +72,11 @@ var MjpegProxy = exports.MjpegProxy = function(mjpegUrl) {
         var lastByte1 = null;
         var lastByte2 = null;
 
-        mjpegResponse.on('data', function(chunk) {
+        var writable = true;
+
+        var processData = function(chunk) {
           // Fix CRLF issue on iOS 6+: boundary should be preceded by CRLF.
-          if (lastByte1 != null && lastByte2 != null) {
+          if (lastByte1 !== null && lastByte2 !== null) {
             var oldheader = '--' + self.boundary;
             var p = buffertools.indexOf(chunk, oldheader);
 
@@ -96,23 +98,50 @@ var MjpegProxy = exports.MjpegProxy = function(mjpegUrl) {
             if (self.newAudienceResponses.indexOf(res) >= 0) {
               var p = buffertools.indexOf(chunk, '--' + self.boundary);
               if (p >= 0) {
-                res.write(chunk.slice(p));
+                writable = res.write(chunk.slice(p));
                 self.newAudienceResponses.splice(self.newAudienceResponses.indexOf(res), 1); // remove from new
               }
             } else {
-              res.write(chunk);
+              writable = res.write(chunk);
             }
           }
-        });
+
+          return writable;
+        };
+
+        var ondrain = function() {
+          //console.log('...draining');
+          if (req.readable && req.resume) {
+            req.resume();
+          }
+        };
+
+        var ondata = function(chunk) {
+          if (processData(chunk) === false && req.pause) {
+            req.pause();
+            //console.log('...pausing request');
+          }
+        };
+
+        var cleanup = function() {
+          mjpegResponse.removeListener('data', ondata);
+          res.removeListener('drain', ondrain);
+        };
+
+        mjpegResponse.on('data', ondata);
+        res.on('drain', ondrain);
+
         mjpegResponse.on('end', function () {
-          // console.log("...end");
+          //console.log("...end");
           for (var i = self.audienceResponses.length; i--;) {
             var res = self.audienceResponses[i];
             res.end();
           }
+          cleanup();
         });
         mjpegResponse.on('close', function () {
-          // console.log("...close");
+          //console.log("...close");
+          cleanup();
         });
       });
 
@@ -121,7 +150,7 @@ var MjpegProxy = exports.MjpegProxy = function(mjpegUrl) {
       });
       self.mjpegRequest.end();
     }
-  }
+  };
 
   self._newClient = function(req, res) {
     res.writeHead(200, {
@@ -142,10 +171,10 @@ var MjpegProxy = exports.MjpegProxy = function(mjpegUrl) {
         self.newAudienceResponses.splice(self.newAudienceResponses.indexOf(res), 1); // remove from new
       }
 
-      if (self.audienceResponses.length == 0) {
+      if (self.audienceResponses.length === 0) {
         self.mjpegRequest = null;
         self.globalMjpegResponse.destroy();
       }
     });
-  }
-}
+  };
+};
